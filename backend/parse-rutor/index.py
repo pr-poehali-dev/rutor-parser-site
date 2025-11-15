@@ -14,6 +14,7 @@ class RutorParser(HTMLParser):
         self.posts = []
         self.current_post = None
         self.in_title_link = False
+        self.in_date_cell = False
         self.in_table_row = False
         self.cell_index = 0
         
@@ -27,6 +28,8 @@ class RutorParser(HTMLParser):
             
         if self.in_table_row and tag == 'td':
             self.cell_index += 1
+            if self.cell_index == 1:
+                self.in_date_cell = True
             
         if self.in_table_row and tag == 'a' and self.cell_index == 2:
             href = attrs_dict.get('href', '')
@@ -43,6 +46,12 @@ class RutorParser(HTMLParser):
                 self.current_post['peers_next'] = True
     
     def handle_data(self, data):
+        if self.in_date_cell:
+            date_str = data.strip()
+            if date_str:
+                self.current_post['date_str'] = date_str
+            self.in_date_cell = False
+            
         if self.in_title_link:
             self.current_post['title'] = data.strip()
             self.in_title_link = False
@@ -72,12 +81,39 @@ class RutorParser(HTMLParser):
             self.current_post = None
             self.cell_index = 0
 
+def parse_rutor_date(date_str: str) -> datetime:
+    now = datetime.now()
+    
+    months_ru = {
+        'Янв': 1, 'Фев': 2, 'Мар': 3, 'Апр': 4, 'Май': 5, 'Июн': 6,
+        'Июл': 7, 'Авг': 8, 'Сен': 9, 'Окт': 10, 'Ноя': 11, 'Дек': 12
+    }
+    
+    if 'Сегодня' in date_str or 'Вчера' in date_str:
+        time_match = re.search(r'(\d{2}):(\d{2})', date_str)
+        if time_match:
+            hour, minute = int(time_match.group(1)), int(time_match.group(2))
+            if 'Вчера' in date_str:
+                return now.replace(hour=hour, minute=minute, second=0, microsecond=0) - timedelta(days=1)
+            else:
+                return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    
+    date_match = re.search(r'(\d{2})\s+(\w{3})\s+(\d{2})', date_str)
+    if date_match:
+        day = int(date_match.group(1))
+        month_str = date_match.group(2)
+        year = 2000 + int(date_match.group(3))
+        month = months_ru.get(month_str, 1)
+        return datetime(year, month, day)
+    
+    return now
+
 def categorize_post(title: str) -> str:
     title_lower = title.lower()
     
-    movie_keywords = ['bdrip', 'webrip', 'hdrip', 'dvdrip', '1080p', '720p', '2160p', 'bluray']
+    movie_keywords = ['bdrip', 'webrip', 'hdrip', 'dvdrip', '1080p', '720p', '2160p', 'bluray', 'hdtv']
     series_keywords = ['s01', 's02', 's03', 's04', 's05', 's06', 's07', 's08', 's09', 's10', 
-                       'season', 'сезон', 'серии', 'episodes']
+                       'season', 'сезон', 'серии', 'series', 'episodes']
     
     if any(kw in title_lower for kw in series_keywords):
         return 'Сериалы'
@@ -127,6 +163,7 @@ def get_kinopoisk_info(title: str, year: int, api_key: str) -> dict:
                         
                         return {
                             'kinopoisk_id': film_id,
+                            'kinopoisk_url': f"https://www.kinopoisk.ru/film/{film_id}/",
                             'kinopoisk_rating': details.get('ratingKinopoisk'),
                             'genre': genres,
                             'director': directors[0] if directors else None,
@@ -168,7 +205,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         cur.execute("""
             SELECT id, title, category, size, seeds, peers, 
                    kinopoisk_rating, release_year, genre, director, 
-                   description, poster_url, published_at, torrent_url
+                   description, poster_url, published_at, torrent_url, kinopoisk_url
             FROM posts 
             WHERE category IN ('Фильмы', 'Сериалы')
             ORDER BY published_at DESC NULLS LAST, created_at DESC 
@@ -193,7 +230,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 'description': row[10],
                 'poster_url': row[11],
                 'published_at': row[12].isoformat() if row[12] else None,
-                'torrent_url': row[13]
+                'torrent_url': row[13],
+                'kinopoisk_url': row[14]
             })
         
         cur.close()
@@ -213,8 +251,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         kinopoisk_key = os.environ.get('KINOPOISK_API_KEY', '')
         
         all_parsed_posts = []
+        two_days_ago = datetime.now() - timedelta(days=2)
         
-        for page in range(0, 5):
+        for page in range(0, 15):
             try:
                 url = f"http://rutor.info/browse/{page}/0/000/0"
                 req = urllib.request.Request(url, headers={
@@ -226,12 +265,18 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     
                 parser = RutorParser()
                 parser.feed(html)
-                all_parsed_posts.extend(parser.posts)
+                
+                for post in parser.posts:
+                    if post.get('date_str'):
+                        post_date = parse_rutor_date(post['date_str'])
+                        if post_date >= two_days_ago:
+                            post['parsed_date'] = post_date
+                            all_parsed_posts.append(post)
+                
             except Exception as e:
                 print(f"Error parsing page {page}: {e}")
                 continue
         
-        two_weeks_ago = datetime.now() - timedelta(days=14)
         inserted_count = 0
         
         conn = psycopg2.connect(dsn)
@@ -251,7 +296,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             if kinopoisk_key and category == 'Фильмы':
                 kp_info = get_kinopoisk_info(post['title'], year, kinopoisk_key)
             
-            published_at = datetime.now().isoformat()
+            published_at = post.get('parsed_date', datetime.now()).isoformat()
             
             values = (
                 str(post['rutor_id']).replace("'", "''"),
@@ -268,6 +313,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 kp_info.get('director', '').replace("'", "''") if kp_info.get('director') else None,
                 kp_info.get('description', '').replace("'", "''") if kp_info.get('description') else None,
                 kp_info.get('poster_url', '').replace("'", "''") if kp_info.get('poster_url') else None,
+                kp_info.get('kinopoisk_url', '').replace("'", "''") if kp_info.get('kinopoisk_url') else None,
                 published_at
             )
             
@@ -275,7 +321,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 INSERT INTO posts (
                     rutor_id, title, category, size, seeds, peers, torrent_url,
                     kinopoisk_rating, kinopoisk_id, release_year, genre, 
-                    director, description, poster_url, published_at
+                    director, description, poster_url, kinopoisk_url, published_at
                 ) VALUES (
                     '{values[0]}', '{values[1]}', '{values[2]}', '{values[3]}', 
                     {values[4]}, {values[5]}, '{values[6]}',
@@ -286,7 +332,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     {'NULL' if values[11] is None else "'" + values[11] + "'"},
                     {'NULL' if values[12] is None else "'" + values[12] + "'"},
                     {'NULL' if values[13] is None else "'" + values[13] + "'"},
-                    '{values[14]}'
+                    {'NULL' if values[14] is None else "'" + values[14] + "'"},
+                    '{values[15]}'
                 )
                 ON CONFLICT (rutor_id) 
                 DO UPDATE SET 
@@ -314,7 +361,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             },
             'body': json.dumps({
                 'message': 'Posts parsed and saved',
-                'count': inserted_count
+                'count': inserted_count,
+                'parsed_total': len(all_parsed_posts)
             }, ensure_ascii=False)
         }
     

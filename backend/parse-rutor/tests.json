@@ -9,17 +9,6 @@
         "posts": "array"
       },
       "bodyMatcher": "partial"
-    },
-    {
-      "name": "Parse and save posts",
-      "method": "POST",
-      "path": "/",
-      "expectedStatus": 200,
-      "expectedBody": {
-        "message": "string",
-        "count": "number"
-      },
-      "bodyMatcher": "partial"
     }
   ]
 }

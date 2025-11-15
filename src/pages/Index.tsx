@@ -23,6 +23,7 @@ interface Post {
   poster_url?: string | null;
   published_at?: string | null;
   torrent_url?: string | null;
+  kinopoisk_url?: string | null;
 }
 
 const API_URL = 'https://functions.poehali.dev/a6c59edf-b051-497f-bef2-42f238045c58';
@@ -70,7 +71,7 @@ const Index = () => {
       
       toast({
         title: 'Обновлено!',
-        description: `Добавлено/обновлено постов: ${data.count}`
+        description: `Загружено фильмов и сериалов за последние 2 дня: ${data.count} из ${data.parsed_total || data.count}`
       });
       
       await fetchPosts();
@@ -313,8 +314,7 @@ const Index = () => {
               filteredAndSortedPosts.map((post) => (
                 <Card
                   key={post.id}
-                  className="p-5 bg-card border-border hover:border-primary/50 transition-all duration-200 hover:scale-[1.01] cursor-pointer"
-                  onClick={() => post.torrent_url && window.open(post.torrent_url, '_blank')}
+                  className="p-5 bg-card border-border hover:border-primary/50 transition-all duration-200 hover:scale-[1.01]"
                 >
                   <div className="flex gap-4">
                     {post.poster_url && (
@@ -394,6 +394,37 @@ const Index = () => {
                           <Icon name="Clock" size={14} />
                           {formatDate(post.published_at)}
                         </span>
+                      </div>
+
+                      <div className="flex gap-2 mt-3">
+                        {post.kinopoisk_url && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              window.open(post.kinopoisk_url, '_blank');
+                            }}
+                            className="flex-1 border-primary/30 hover:bg-primary/10"
+                          >
+                            <Icon name="Star" size={14} className="mr-2" />
+                            Кинопоиск
+                          </Button>
+                        )}
+                        {post.torrent_url && (
+                          <Button
+                            variant="default"
+                            size="sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              window.open(post.torrent_url, '_blank');
+                            }}
+                            className="flex-1"
+                          >
+                            <Icon name="Download" size={14} className="mr-2" />
+                            Скачать
+                          </Button>
+                        )}
                       </div>
                     </div>
                   </div>
