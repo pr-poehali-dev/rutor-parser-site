@@ -2,8 +2,142 @@ import json
 import os
 import psycopg2
 from typing import Dict, Any, List
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
+import urllib.request
+import urllib.parse
+from html.parser import HTMLParser
+
+class RutorParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.posts = []
+        self.current_post = None
+        self.in_title_link = False
+        self.in_table_row = False
+        self.cell_index = 0
+        
+    def handle_starttag(self, tag, attrs):
+        attrs_dict = dict(attrs)
+        
+        if tag == 'tr' and attrs_dict.get('class') in ['gai', 'tum']:
+            self.in_table_row = True
+            self.current_post = {'seeds': 0, 'peers': 0}
+            self.cell_index = 0
+            
+        if self.in_table_row and tag == 'td':
+            self.cell_index += 1
+            
+        if self.in_table_row and tag == 'a' and self.cell_index == 2:
+            href = attrs_dict.get('href', '')
+            if href.startswith('/torrent/'):
+                self.in_title_link = True
+                self.current_post['rutor_id'] = href.split('/')[2]
+                self.current_post['torrent_url'] = f"http://rutor.info{href}"
+                
+        if self.in_table_row and tag == 'span' and self.cell_index == 4:
+            span_class = attrs_dict.get('class', '')
+            if 'green' in span_class:
+                self.current_post['seeds_next'] = True
+            elif 'red' in span_class:
+                self.current_post['peers_next'] = True
+    
+    def handle_data(self, data):
+        if self.in_title_link:
+            self.current_post['title'] = data.strip()
+            self.in_title_link = False
+            
+        if self.in_table_row and self.current_post:
+            if self.cell_index == 3:
+                self.current_post['size'] = data.strip()
+            elif self.cell_index == 4:
+                if self.current_post.get('seeds_next'):
+                    try:
+                        self.current_post['seeds'] = int(data.strip())
+                    except:
+                        pass
+                    self.current_post['seeds_next'] = False
+                elif self.current_post.get('peers_next'):
+                    try:
+                        self.current_post['peers'] = int(data.strip())
+                    except:
+                        pass
+                    self.current_post['peers_next'] = False
+    
+    def handle_endtag(self, tag):
+        if tag == 'tr' and self.in_table_row:
+            if self.current_post and self.current_post.get('title'):
+                self.posts.append(self.current_post)
+            self.in_table_row = False
+            self.current_post = None
+            self.cell_index = 0
+
+def categorize_post(title: str) -> str:
+    title_lower = title.lower()
+    
+    movie_keywords = ['bdrip', 'webrip', 'hdrip', 'dvdrip', '1080p', '720p', '2160p', 'bluray']
+    series_keywords = ['s01', 's02', 's03', 's04', 's05', 's06', 's07', 's08', 's09', 's10', 
+                       'season', 'сезон', 'серии', 'episodes']
+    
+    if any(kw in title_lower for kw in series_keywords):
+        return 'Сериалы'
+    elif any(kw in title_lower for kw in movie_keywords):
+        return 'Фильмы'
+    
+    return None
+
+def extract_year(title: str) -> int:
+    matches = re.findall(r'\((\d{4})\)', title)
+    if matches:
+        year = int(matches[-1])
+        if 1900 <= year <= 2025:
+            return year
+    return None
+
+def get_kinopoisk_info(title: str, year: int, api_key: str) -> dict:
+    if not api_key:
+        return {}
+    
+    clean_title = re.sub(r'\(.*?\)', '', title)
+    clean_title = re.sub(r'\[.*?\]', '', clean_title)
+    clean_title = clean_title.split('/')[0].strip()
+    
+    try:
+        search_url = f"https://kinopoiskapiunofficial.tech/api/v2.1/films/search-by-keyword?keyword={urllib.parse.quote(clean_title)}"
+        req = urllib.request.Request(search_url, headers={'X-API-KEY': api_key})
+        
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode())
+            films = data.get('films', [])
+            
+            for film in films[:3]:
+                film_year = film.get('year')
+                if year and film_year and abs(int(film_year) - year) <= 1:
+                    film_id = film.get('filmId')
+                    
+                    detail_url = f"https://kinopoiskapiunofficial.tech/api/v2.2/films/{film_id}"
+                    req2 = urllib.request.Request(detail_url, headers={'X-API-KEY': api_key})
+                    
+                    with urllib.request.urlopen(req2, timeout=5) as resp2:
+                        details = json.loads(resp2.read().decode())
+                        
+                        genres = ', '.join([g.get('genre', '') for g in details.get('genres', [])[:3]])
+                        directors = [p.get('nameRu', '') or p.get('nameEn', '') 
+                                   for p in details.get('staff', []) if p.get('professionKey') == 'DIRECTOR']
+                        
+                        return {
+                            'kinopoisk_id': film_id,
+                            'kinopoisk_rating': details.get('ratingKinopoisk'),
+                            'genre': genres,
+                            'director': directors[0] if directors else None,
+                            'description': details.get('description', '')[:500],
+                            'poster_url': details.get('posterUrl'),
+                            'release_year': details.get('year')
+                        }
+    except Exception as e:
+        print(f"Kinopoisk API error: {e}")
+    
+    return {}
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     '''
@@ -36,8 +170,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                    kinopoisk_rating, release_year, genre, director, 
                    description, poster_url, published_at, torrent_url
             FROM posts 
+            WHERE category IN ('Фильмы', 'Сериалы')
             ORDER BY published_at DESC NULLS LAST, created_at DESC 
-            LIMIT 50
+            LIMIT 200
         """)
         
         rows = cur.fetchall()
@@ -77,112 +212,63 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         dsn = os.environ.get('DATABASE_URL')
         kinopoisk_key = os.environ.get('KINOPOISK_API_KEY', '')
         
-        mock_posts = [
-            {
-                'rutor_id': 'rt_001',
-                'title': 'Оппенгеймер / Oppenheimer (2023) BDRip 1080p',
-                'category': 'Фильмы',
-                'size': '18.5 GB',
-                'seeds': 892,
-                'peers': 145,
-                'torrent_url': 'magnet:?xt=urn:btih:example1',
-                'kinopoisk_rating': 8.2,
-                'kinopoisk_id': 1236063,
-                'release_year': 2023,
-                'genre': 'биография, драма, история',
-                'director': 'Кристофер Нолан',
-                'description': 'История жизни американского физика-теоретика Роберта Оппенгеймера',
-                'poster_url': 'https://kinopoiskapiunofficial.tech/images/posters/kp/1236063.jpg',
-                'published_at': '2025-11-15T10:30:00'
-            },
-            {
-                'rutor_id': 'rt_002',
-                'title': 'Дюна 2 / Dune: Part Two (2024) BDRip 1080p',
-                'category': 'Фильмы',
-                'size': '21.3 GB',
-                'seeds': 1534,
-                'peers': 289,
-                'torrent_url': 'magnet:?xt=urn:btih:example2',
-                'kinopoisk_rating': 8.1,
-                'kinopoisk_id': 1312650,
-                'release_year': 2024,
-                'genre': 'фантастика, боевик, драма',
-                'director': 'Дени Вильнёв',
-                'description': 'Пол Атрейдес объединяется с Чани и фрименами',
-                'poster_url': 'https://kinopoiskapiunofficial.tech/images/posters/kp/1312650.jpg',
-                'published_at': '2025-11-15T09:15:00'
-            },
-            {
-                'rutor_id': 'rt_003',
-                'title': 'Cyberpunk 2077: Phantom Liberty [v 2.1] (2023) PC | Repack',
-                'category': 'Игры',
-                'size': '98.5 GB',
-                'seeds': 2341,
-                'peers': 567,
-                'torrent_url': 'magnet:?xt=urn:btih:example3',
-                'published_at': '2025-11-14T18:20:00'
-            },
-            {
-                'rutor_id': 'rt_004',
-                'title': 'Бесславные ублюдки / Inglourious Basterds (2009) BDRip 1080p',
-                'category': 'Фильмы',
-                'size': '14.2 GB',
-                'seeds': 456,
-                'peers': 78,
-                'torrent_url': 'magnet:?xt=urn:btih:example4',
-                'kinopoisk_rating': 8.1,
-                'kinopoisk_id': 397667,
-                'release_year': 2009,
-                'genre': 'боевик, военный, драма',
-                'director': 'Квентин Тарантино',
-                'description': 'История двух тайных операций по убийству лидеров Третьего Рейха',
-                'poster_url': 'https://kinopoiskapiunofficial.tech/images/posters/kp/397667.jpg',
-                'published_at': '2025-11-14T15:45:00'
-            },
-            {
-                'rutor_id': 'rt_005',
-                'title': 'Adobe Photoshop 2024 v25.0.0.37 (2024) PC | Portable',
-                'category': 'Софт',
-                'size': '2.3 GB',
-                'seeds': 789,
-                'peers': 123,
-                'torrent_url': 'magnet:?xt=urn:btih:example5',
-                'published_at': '2025-11-14T12:00:00'
-            },
-            {
-                'rutor_id': 'rt_006',
-                'title': 'Linkin Park - Discography (2000-2024) FLAC',
-                'category': 'Музыка',
-                'size': '12.8 GB',
-                'seeds': 234,
-                'peers': 45,
-                'torrent_url': 'magnet:?xt=urn:btih:example6',
-                'published_at': '2025-11-13T20:30:00'
-            }
-        ]
+        all_parsed_posts = []
         
+        for page in range(0, 5):
+            try:
+                url = f"http://rutor.info/browse/{page}/0/000/0"
+                req = urllib.request.Request(url, headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                })
+                
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    html = response.read().decode('utf-8', errors='ignore')
+                    
+                parser = RutorParser()
+                parser.feed(html)
+                all_parsed_posts.extend(parser.posts)
+            except Exception as e:
+                print(f"Error parsing page {page}: {e}")
+                continue
+        
+        two_weeks_ago = datetime.now() - timedelta(days=14)
         inserted_count = 0
         
         conn = psycopg2.connect(dsn)
         cur = conn.cursor()
         
-        for post in mock_posts:
+        for post in all_parsed_posts:
+            if not post.get('title') or not post.get('rutor_id'):
+                continue
+            
+            category = categorize_post(post['title'])
+            if category not in ['Фильмы', 'Сериалы']:
+                continue
+            
+            year = extract_year(post['title'])
+            
+            kp_info = {}
+            if kinopoisk_key and category == 'Фильмы':
+                kp_info = get_kinopoisk_info(post['title'], year, kinopoisk_key)
+            
+            published_at = datetime.now().isoformat()
+            
             values = (
-                post['rutor_id'],
+                str(post['rutor_id']).replace("'", "''"),
                 post['title'].replace("'", "''"),
-                post.get('category', '').replace("'", "''"),
+                category.replace("'", "''") if category else '',
                 post.get('size', '').replace("'", "''"),
                 post.get('seeds', 0),
                 post.get('peers', 0),
                 post.get('torrent_url', '').replace("'", "''"),
-                post.get('kinopoisk_rating'),
-                post.get('kinopoisk_id'),
-                post.get('release_year'),
-                post.get('genre', '').replace("'", "''") if post.get('genre') else None,
-                post.get('director', '').replace("'", "''") if post.get('director') else None,
-                post.get('description', '').replace("'", "''") if post.get('description') else None,
-                post.get('poster_url', '').replace("'", "''") if post.get('poster_url') else None,
-                post.get('published_at')
+                kp_info.get('kinopoisk_rating'),
+                kp_info.get('kinopoisk_id'),
+                kp_info.get('release_year') or year,
+                kp_info.get('genre', '').replace("'", "''") if kp_info.get('genre') else None,
+                kp_info.get('director', '').replace("'", "''") if kp_info.get('director') else None,
+                kp_info.get('description', '').replace("'", "''") if kp_info.get('description') else None,
+                kp_info.get('poster_url', '').replace("'", "''") if kp_info.get('poster_url') else None,
+                published_at
             )
             
             query = f"""
@@ -209,8 +295,12 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     updated_at = CURRENT_TIMESTAMP
             """
             
-            cur.execute(query)
-            inserted_count += 1
+            try:
+                cur.execute(query)
+                inserted_count += 1
+            except Exception as e:
+                print(f"Error inserting post: {e}")
+                continue
         
         conn.commit()
         cur.close()
