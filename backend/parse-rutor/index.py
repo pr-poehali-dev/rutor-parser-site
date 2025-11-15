@@ -1,11 +1,10 @@
 import json
 import os
 import psycopg2
-from typing import Dict, Any, List
+from typing import Dict, Any
 from datetime import datetime, timedelta
 import re
 import urllib.request
-import urllib.parse
 from html.parser import HTMLParser
 
 class RutorParser(HTMLParser):
@@ -122,7 +121,7 @@ def categorize_post(title: str) -> str:
     
     return None
 
-def extract_year(title: str) -> int:
+def extract_year(title: str):
     matches = re.findall(r'\((\d{4})\)', title)
     if matches:
         year = int(matches[-1])
@@ -130,55 +129,9 @@ def extract_year(title: str) -> int:
             return year
     return None
 
-def get_kinopoisk_info(title: str, year: int, api_key: str) -> dict:
-    if not api_key:
-        return {}
-    
-    clean_title = re.sub(r'\(.*?\)', '', title)
-    clean_title = re.sub(r'\[.*?\]', '', clean_title)
-    clean_title = clean_title.split('/')[0].strip()
-    
-    try:
-        search_url = f"https://kinopoiskapiunofficial.tech/api/v2.1/films/search-by-keyword?keyword={urllib.parse.quote(clean_title)}"
-        req = urllib.request.Request(search_url, headers={'X-API-KEY': api_key})
-        
-        with urllib.request.urlopen(req, timeout=5) as response:
-            data = json.loads(response.read().decode())
-            films = data.get('films', [])
-            
-            for film in films[:3]:
-                film_year = film.get('year')
-                if year and film_year and abs(int(film_year) - year) <= 1:
-                    film_id = film.get('filmId')
-                    
-                    detail_url = f"https://kinopoiskapiunofficial.tech/api/v2.2/films/{film_id}"
-                    req2 = urllib.request.Request(detail_url, headers={'X-API-KEY': api_key})
-                    
-                    with urllib.request.urlopen(req2, timeout=5) as resp2:
-                        details = json.loads(resp2.read().decode())
-                        
-                        genres = ', '.join([g.get('genre', '') for g in details.get('genres', [])[:3]])
-                        directors = [p.get('nameRu', '') or p.get('nameEn', '') 
-                                   for p in details.get('staff', []) if p.get('professionKey') == 'DIRECTOR']
-                        
-                        return {
-                            'kinopoisk_id': film_id,
-                            'kinopoisk_url': f"https://www.kinopoisk.ru/film/{film_id}/",
-                            'kinopoisk_rating': details.get('ratingKinopoisk'),
-                            'genre': genres,
-                            'director': directors[0] if directors else None,
-                            'description': details.get('description', '')[:500],
-                            'poster_url': details.get('posterUrl'),
-                            'release_year': details.get('year')
-                        }
-    except Exception as e:
-        print(f"Kinopoisk API error: {e}")
-    
-    return {}
-
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     '''
-    Business: Parse rutor.info posts and store in database with Kinopoisk data
+    Business: Parse rutor.info posts and store in database
     Args: event - HTTP event; context - execution context
     Returns: HTTP response with parsed posts count
     '''
@@ -248,19 +201,18 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     
     if method == 'POST':
         dsn = os.environ.get('DATABASE_URL')
-        kinopoisk_key = os.environ.get('KINOPOISK_API_KEY', '')
         
         all_parsed_posts = []
         two_days_ago = datetime.now() - timedelta(days=2)
         
-        for page in range(0, 15):
+        for page in range(0, 10):
             try:
                 url = f"http://rutor.info/browse/{page}/0/000/0"
                 req = urllib.request.Request(url, headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    'User-Agent': 'Mozilla/5.0'
                 })
                 
-                with urllib.request.urlopen(req, timeout=10) as response:
+                with urllib.request.urlopen(req, timeout=3) as response:
                     html = response.read().decode('utf-8', errors='ignore')
                     
                 parser = RutorParser()
@@ -274,7 +226,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                             all_parsed_posts.append(post)
                 
             except Exception as e:
-                print(f"Error parsing page {page}: {e}")
+                print(f"Error page {page}: {e}")
                 continue
         
         inserted_count = 0
@@ -291,49 +243,25 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 continue
             
             year = extract_year(post['title'])
-            
-            kp_info = {}
-            if kinopoisk_key and category == 'Фильмы':
-                kp_info = get_kinopoisk_info(post['title'], year, kinopoisk_key)
-            
             published_at = post.get('parsed_date', datetime.now()).isoformat()
             
-            values = (
-                str(post['rutor_id']).replace("'", "''"),
-                post['title'].replace("'", "''"),
-                category.replace("'", "''") if category else '',
-                post.get('size', '').replace("'", "''"),
-                post.get('seeds', 0),
-                post.get('peers', 0),
-                post.get('torrent_url', '').replace("'", "''"),
-                kp_info.get('kinopoisk_rating'),
-                kp_info.get('kinopoisk_id'),
-                kp_info.get('release_year') or year,
-                kp_info.get('genre', '').replace("'", "''") if kp_info.get('genre') else None,
-                kp_info.get('director', '').replace("'", "''") if kp_info.get('director') else None,
-                kp_info.get('description', '').replace("'", "''") if kp_info.get('description') else None,
-                kp_info.get('poster_url', '').replace("'", "''") if kp_info.get('poster_url') else None,
-                kp_info.get('kinopoisk_url', '').replace("'", "''") if kp_info.get('kinopoisk_url') else None,
-                published_at
-            )
+            rutor_id = str(post['rutor_id']).replace("'", "''")
+            title = post['title'].replace("'", "''")
+            cat = category.replace("'", "''")
+            size = post.get('size', '').replace("'", "''")
+            seeds = post.get('seeds', 0)
+            peers = post.get('peers', 0)
+            torrent_url = post.get('torrent_url', '').replace("'", "''")
             
             query = f"""
                 INSERT INTO posts (
                     rutor_id, title, category, size, seeds, peers, torrent_url,
-                    kinopoisk_rating, kinopoisk_id, release_year, genre, 
-                    director, description, poster_url, kinopoisk_url, published_at
+                    release_year, published_at
                 ) VALUES (
-                    '{values[0]}', '{values[1]}', '{values[2]}', '{values[3]}', 
-                    {values[4]}, {values[5]}, '{values[6]}',
-                    {values[7] if values[7] is not None else 'NULL'}, 
-                    {values[8] if values[8] is not None else 'NULL'}, 
-                    {values[9] if values[9] is not None else 'NULL'},
-                    {'NULL' if values[10] is None else "'" + values[10] + "'"},
-                    {'NULL' if values[11] is None else "'" + values[11] + "'"},
-                    {'NULL' if values[12] is None else "'" + values[12] + "'"},
-                    {'NULL' if values[13] is None else "'" + values[13] + "'"},
-                    {'NULL' if values[14] is None else "'" + values[14] + "'"},
-                    '{values[15]}'
+                    '{rutor_id}', '{title}', '{cat}', '{size}', 
+                    {seeds}, {peers}, '{torrent_url}',
+                    {year if year else 'NULL'},
+                    '{published_at}'
                 )
                 ON CONFLICT (rutor_id) 
                 DO UPDATE SET 
@@ -346,7 +274,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 cur.execute(query)
                 inserted_count += 1
             except Exception as e:
-                print(f"Error inserting post: {e}")
+                print(f"Insert error: {e}")
                 continue
         
         conn.commit()
