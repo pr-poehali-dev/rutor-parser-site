@@ -1,8 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Slider } from '@/components/ui/slider';
 import Icon from '@/components/ui/icon';
 import { useToast } from '@/hooks/use-toast';
 
@@ -24,7 +26,7 @@ interface Post {
 }
 
 const API_URL = 'https://functions.poehali.dev/a6c59edf-b051-497f-bef2-42f238045c58';
-const categories = ['Все', 'Фильмы', 'Сериалы', 'Игры', 'Софт', 'Музыка'];
+const categories = ['Все', 'Фильмы', 'Сериалы'];
 
 const Index = () => {
   const [searchQuery, setSearchQuery] = useState('');
@@ -34,12 +36,21 @@ const Index = () => {
   const [updating, setUpdating] = useState(false);
   const { toast } = useToast();
 
+  const [minRating, setMinRating] = useState([0]);
+  const [sortBy, setSortBy] = useState('date');
+  const [selectedGenre, setSelectedGenre] = useState('Все');
+  const [selectedDirector, setSelectedDirector] = useState('Все');
+  const [yearRange, setYearRange] = useState([1900, 2025]);
+
   const fetchPosts = async () => {
     setLoading(true);
     try {
       const response = await fetch(API_URL);
       const data = await response.json();
-      setPosts(data.posts || []);
+      const moviesAndSeries = (data.posts || []).filter(
+        (post: Post) => post.category === 'Фильмы' || post.category === 'Сериалы'
+      );
+      setPosts(moviesAndSeries);
     } catch (error) {
       toast({
         title: 'Ошибка загрузки',
@@ -78,11 +89,54 @@ const Index = () => {
     fetchPosts();
   }, []);
 
-  const filteredPosts = posts.filter(post => {
-    const matchesSearch = post.title.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesCategory = selectedCategory === 'Все' || post.category === selectedCategory;
-    return matchesSearch && matchesCategory;
-  });
+  const genres = useMemo(() => {
+    const genreSet = new Set<string>();
+    posts.forEach(post => {
+      if (post.genre) {
+        post.genre.split(',').forEach(g => genreSet.add(g.trim()));
+      }
+    });
+    return ['Все', ...Array.from(genreSet).sort()];
+  }, [posts]);
+
+  const directors = useMemo(() => {
+    const directorSet = new Set<string>();
+    posts.forEach(post => {
+      if (post.director) directorSet.add(post.director.trim());
+    });
+    return ['Все', ...Array.from(directorSet).sort()];
+  }, [posts]);
+
+  const filteredAndSortedPosts = useMemo(() => {
+    const filtered = posts.filter(post => {
+      const matchesSearch = post.title.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesCategory = selectedCategory === 'Все' || post.category === selectedCategory;
+      const matchesRating = !post.kinopoisk_rating || post.kinopoisk_rating >= minRating[0];
+      const matchesGenre = selectedGenre === 'Все' || (post.genre && post.genre.toLowerCase().includes(selectedGenre.toLowerCase()));
+      const matchesDirector = selectedDirector === 'Все' || post.director === selectedDirector;
+      const matchesYear = !post.release_year || (post.release_year >= yearRange[0] && post.release_year <= yearRange[1]);
+      
+      return matchesSearch && matchesCategory && matchesRating && matchesGenre && matchesDirector && matchesYear;
+    });
+
+    filtered.sort((a, b) => {
+      switch (sortBy) {
+        case 'rating':
+          return (b.kinopoisk_rating || 0) - (a.kinopoisk_rating || 0);
+        case 'year':
+          return (b.release_year || 0) - (a.release_year || 0);
+        case 'title':
+          return a.title.localeCompare(b.title);
+        case 'date':
+        default:
+          const dateA = a.published_at ? new Date(a.published_at).getTime() : 0;
+          const dateB = b.published_at ? new Date(b.published_at).getTime() : 0;
+          return dateB - dateA;
+      }
+    });
+
+    return filtered;
+  }, [posts, searchQuery, selectedCategory, minRating, sortBy, selectedGenre, selectedDirector, yearRange]);
 
   const formatDate = (dateStr: string | null | undefined) => {
     if (!dateStr) return 'Неизвестно';
@@ -90,16 +144,26 @@ const Index = () => {
     return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' });
   };
 
+  const resetFilters = () => {
+    setSearchQuery('');
+    setSelectedCategory('Все');
+    setMinRating([0]);
+    setSortBy('date');
+    setSelectedGenre('Все');
+    setSelectedDirector('Все');
+    setYearRange([1900, 2025]);
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <div className="container mx-auto px-4 py-8 max-w-7xl">
-        <header className="mb-12">
+        <header className="mb-8">
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-3">
               <div className="w-12 h-12 bg-primary rounded-xl flex items-center justify-center">
-                <Icon name="Radio" size={24} className="text-primary-foreground" />
+                <Icon name="Film" size={24} className="text-primary-foreground" />
               </div>
-              <h1 className="text-3xl font-bold text-foreground">Rutor Агрегатор</h1>
+              <h1 className="text-3xl font-bold text-foreground">Кино Агрегатор</h1>
             </div>
             
             <Button 
@@ -115,13 +179,13 @@ const Index = () => {
               ) : (
                 <>
                   <Icon name="RefreshCw" size={16} className="mr-2" />
-                  Обновить базу
+                  Обновить
                 </>
               )}
             </Button>
           </div>
           
-          <div className="relative">
+          <div className="relative mb-4">
             <Icon name="Search" size={20} className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground" />
             <Input
               type="text"
@@ -131,24 +195,112 @@ const Index = () => {
               className="pl-12 h-12 bg-card border-border text-foreground placeholder:text-muted-foreground"
             />
           </div>
-        </header>
 
-        <div className="flex flex-wrap gap-2 mb-8">
-          {categories.map((category) => (
-            <Badge
-              key={category}
-              variant={selectedCategory === category ? 'default' : 'outline'}
-              className={`cursor-pointer px-4 py-2 text-sm font-medium transition-all hover:scale-105 ${
-                selectedCategory === category
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-card text-foreground border-border hover:bg-muted'
-              }`}
-              onClick={() => setSelectedCategory(category)}
-            >
-              {category}
-            </Badge>
-          ))}
-        </div>
+          <div className="flex flex-wrap gap-2 mb-4">
+            {categories.map((category) => (
+              <Badge
+                key={category}
+                variant={selectedCategory === category ? 'default' : 'outline'}
+                className={`cursor-pointer px-4 py-2 text-sm font-medium transition-all hover:scale-105 ${
+                  selectedCategory === category
+                    ? 'bg-primary text-primary-foreground'
+                    : 'bg-card text-foreground border-border hover:bg-muted'
+                }`}
+                onClick={() => setSelectedCategory(category)}
+              >
+                {category}
+              </Badge>
+            ))}
+          </div>
+
+          <div className="bg-card border border-border rounded-lg p-4 space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div>
+                <label className="text-sm font-medium text-foreground mb-2 block">Сортировка</label>
+                <Select value={sortBy} onValueChange={setSortBy}>
+                  <SelectTrigger className="bg-background border-border">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="date">По дате публикации</SelectItem>
+                    <SelectItem value="rating">По рейтингу</SelectItem>
+                    <SelectItem value="year">По году выпуска</SelectItem>
+                    <SelectItem value="title">По названию</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium text-foreground mb-2 block">Жанр</label>
+                <Select value={selectedGenre} onValueChange={setSelectedGenre}>
+                  <SelectTrigger className="bg-background border-border">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {genres.map(genre => (
+                      <SelectItem key={genre} value={genre}>{genre}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium text-foreground mb-2 block">Режиссёр</label>
+                <Select value={selectedDirector} onValueChange={setSelectedDirector}>
+                  <SelectTrigger className="bg-background border-border">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {directors.map(director => (
+                      <SelectItem key={director} value={director}>{director}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="flex items-end">
+                <Button 
+                  variant="outline" 
+                  onClick={resetFilters}
+                  className="w-full"
+                >
+                  <Icon name="X" size={16} className="mr-2" />
+                  Сбросить фильтры
+                </Button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="text-sm font-medium text-foreground mb-2 block">
+                  Рейтинг Кинопоиска: от {minRating[0]}
+                </label>
+                <Slider
+                  value={minRating}
+                  onValueChange={setMinRating}
+                  min={0}
+                  max={10}
+                  step={0.1}
+                  className="w-full"
+                />
+              </div>
+
+              <div>
+                <label className="text-sm font-medium text-foreground mb-2 block">
+                  Год выпуска: {yearRange[0]} - {yearRange[1]}
+                </label>
+                <Slider
+                  value={yearRange}
+                  onValueChange={setYearRange}
+                  min={1900}
+                  max={2025}
+                  step={1}
+                  className="w-full"
+                />
+              </div>
+            </div>
+          </div>
+        </header>
 
         {loading ? (
           <div className="text-center py-16">
@@ -157,8 +309,8 @@ const Index = () => {
           </div>
         ) : (
           <div className="grid gap-4 animate-fade-in">
-            {filteredPosts.length > 0 ? (
-              filteredPosts.map((post) => (
+            {filteredAndSortedPosts.length > 0 ? (
+              filteredAndSortedPosts.map((post) => (
                 <Card
                   key={post.id}
                   className="p-5 bg-card border-border hover:border-primary/50 transition-all duration-200 hover:scale-[1.01] cursor-pointer"
@@ -252,16 +404,16 @@ const Index = () => {
                 <Icon name="Search" size={48} className="mx-auto text-muted-foreground mb-4" />
                 <p className="text-lg text-muted-foreground">Ничего не найдено</p>
                 <p className="text-sm text-muted-foreground mt-2">
-                  {posts.length === 0 ? 'Нажмите "Обновить базу" для загрузки постов' : 'Попробуйте изменить запрос'}
+                  {posts.length === 0 ? 'Нажмите "Обновить" для загрузки постов' : 'Попробуйте изменить фильтры'}
                 </p>
               </div>
             )}
           </div>
         )}
 
-        {filteredPosts.length > 0 && (
+        {filteredAndSortedPosts.length > 0 && (
           <div className="mt-8 text-center text-sm text-muted-foreground">
-            Найдено постов: {filteredPosts.length} из {posts.length}
+            Показано: {filteredAndSortedPosts.length} из {posts.length} фильмов
           </div>
         )}
       </div>
