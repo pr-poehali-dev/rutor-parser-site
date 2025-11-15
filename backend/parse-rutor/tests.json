@@ -1,0 +1,25 @@
+{
+  "tests": [
+    {
+      "name": "Get posts from database",
+      "method": "GET",
+      "path": "/",
+      "expectedStatus": 200,
+      "expectedBody": {
+        "posts": "array"
+      },
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Parse and save posts",
+      "method": "POST",
+      "path": "/",
+      "expectedStatus": 200,
+      "expectedBody": {
+        "message": "string",
+        "count": "number"
+      },
+      "bodyMatcher": "partial"
+    }
+  ]
+}

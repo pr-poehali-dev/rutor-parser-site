@@ -1,8 +1,10 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import Icon from '@/components/ui/icon';
+import { useToast } from '@/hooks/use-toast';
 
 interface Post {
   id: string;
@@ -11,94 +13,112 @@ interface Post {
   size: string;
   seeds: number;
   peers: number;
-  date: string;
-  url: string;
+  kinopoisk_rating?: number | null;
+  release_year?: number | null;
+  genre?: string | null;
+  director?: string | null;
+  description?: string | null;
+  poster_url?: string | null;
+  published_at?: string | null;
+  torrent_url?: string | null;
 }
 
-const mockPosts: Post[] = [
-  {
-    id: '1',
-    title: 'Великий уравнитель 3 / The Equalizer 3 (2023) BDRip 1080p',
-    category: 'Фильмы',
-    size: '14.8 GB',
-    seeds: 245,
-    peers: 12,
-    date: '15 ноя 2025',
-    url: '#'
-  },
-  {
-    id: '2',
-    title: 'Cyberpunk 2077: Phantom Liberty [v 2.1] (2023) PC | Repack',
-    category: 'Игры',
-    size: '98.5 GB',
-    seeds: 892,
-    peers: 156,
-    date: '15 ноя 2025',
-    url: '#'
-  },
-  {
-    id: '3',
-    title: 'Adobe Photoshop 2024 v25.0.0.37 (2024) PC | Portable',
-    category: 'Софт',
-    size: '2.3 GB',
-    seeds: 543,
-    peers: 89,
-    date: '14 ноя 2025',
-    url: '#'
-  },
-  {
-    id: '4',
-    title: 'Ходячие мертвецы / The Walking Dead [S01-11] (2010-2022) WEB-DL 1080p',
-    category: 'Сериалы',
-    size: '287.4 GB',
-    seeds: 1234,
-    peers: 456,
-    date: '14 ноя 2025',
-    url: '#'
-  },
-  {
-    id: '5',
-    title: 'Linkin Park - Discography (2000-2024) FLAC',
-    category: 'Музыка',
-    size: '12.8 GB',
-    seeds: 678,
-    peers: 34,
-    date: '13 ноя 2025',
-    url: '#'
-  },
-  {
-    id: '6',
-    title: 'Python для анализа данных. 3-е издание (2023) PDF',
-    category: 'Софт',
-    size: '45 MB',
-    seeds: 321,
-    peers: 21,
-    date: '13 ноя 2025',
-    url: '#'
-  }
-];
-
+const API_URL = 'https://functions.poehali.dev/a6c59edf-b051-497f-bef2-42f238045c58';
 const categories = ['Все', 'Фильмы', 'Сериалы', 'Игры', 'Софт', 'Музыка'];
 
 const Index = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('Все');
+  const [posts, setPosts] = useState<Post[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [updating, setUpdating] = useState(false);
+  const { toast } = useToast();
 
-  const filteredPosts = mockPosts.filter(post => {
+  const fetchPosts = async () => {
+    setLoading(true);
+    try {
+      const response = await fetch(API_URL);
+      const data = await response.json();
+      setPosts(data.posts || []);
+    } catch (error) {
+      toast({
+        title: 'Ошибка загрузки',
+        description: 'Не удалось загрузить посты',
+        variant: 'destructive'
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const updatePosts = async () => {
+    setUpdating(true);
+    try {
+      const response = await fetch(API_URL, { method: 'POST' });
+      const data = await response.json();
+      
+      toast({
+        title: 'Обновлено!',
+        description: `Добавлено/обновлено постов: ${data.count}`
+      });
+      
+      await fetchPosts();
+    } catch (error) {
+      toast({
+        title: 'Ошибка обновления',
+        description: 'Не удалось обновить базу',
+        variant: 'destructive'
+      });
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchPosts();
+  }, []);
+
+  const filteredPosts = posts.filter(post => {
     const matchesSearch = post.title.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesCategory = selectedCategory === 'Все' || post.category === selectedCategory;
     return matchesSearch && matchesCategory;
   });
 
+  const formatDate = (dateStr: string | null | undefined) => {
+    if (!dateStr) return 'Неизвестно';
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' });
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <div className="container mx-auto px-4 py-8 max-w-7xl">
         <header className="mb-12">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="w-12 h-12 bg-primary rounded-xl flex items-center justify-center">
-              <Icon name="Radio" size={24} className="text-primary-foreground" />
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 bg-primary rounded-xl flex items-center justify-center">
+                <Icon name="Radio" size={24} className="text-primary-foreground" />
+              </div>
+              <h1 className="text-3xl font-bold text-foreground">Rutor Агрегатор</h1>
             </div>
-            <h1 className="text-3xl font-bold text-foreground">Rutor Агрегатор</h1>
+            
+            <Button 
+              onClick={updatePosts} 
+              disabled={updating}
+              className="bg-primary hover:bg-primary/90"
+            >
+              {updating ? (
+                <>
+                  <Icon name="Loader2" size={16} className="mr-2 animate-spin" />
+                  Обновление...
+                </>
+              ) : (
+                <>
+                  <Icon name="RefreshCw" size={16} className="mr-2" />
+                  Обновить базу
+                </>
+              )}
+            </Button>
           </div>
           
           <div className="relative">
@@ -130,59 +150,118 @@ const Index = () => {
           ))}
         </div>
 
-        <div className="grid gap-4 animate-fade-in">
-          {filteredPosts.length > 0 ? (
-            filteredPosts.map((post) => (
-              <Card
-                key={post.id}
-                className="p-5 bg-card border-border hover:border-primary/50 transition-all duration-200 hover:scale-[1.01] cursor-pointer"
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex-1 min-w-0">
-                    <h3 className="text-lg font-semibold text-foreground mb-2 line-clamp-2">
-                      {post.title}
-                    </h3>
-                    <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
-                      <Badge variant="secondary" className="bg-muted text-foreground">
-                        {post.category}
-                      </Badge>
-                      <span className="flex items-center gap-1">
-                        <Icon name="HardDrive" size={14} />
-                        {post.size}
-                      </span>
-                      <span className="flex items-center gap-1">
-                        <Icon name="Calendar" size={14} />
-                        {post.date}
-                      </span>
+        {loading ? (
+          <div className="text-center py-16">
+            <Icon name="Loader2" size={48} className="mx-auto text-primary animate-spin mb-4" />
+            <p className="text-lg text-muted-foreground">Загрузка постов...</p>
+          </div>
+        ) : (
+          <div className="grid gap-4 animate-fade-in">
+            {filteredPosts.length > 0 ? (
+              filteredPosts.map((post) => (
+                <Card
+                  key={post.id}
+                  className="p-5 bg-card border-border hover:border-primary/50 transition-all duration-200 hover:scale-[1.01] cursor-pointer"
+                  onClick={() => post.torrent_url && window.open(post.torrent_url, '_blank')}
+                >
+                  <div className="flex gap-4">
+                    {post.poster_url && (
+                      <div className="shrink-0 hidden md:block">
+                        <img 
+                          src={post.poster_url} 
+                          alt={post.title}
+                          className="w-24 h-36 object-cover rounded-lg"
+                        />
+                      </div>
+                    )}
+                    
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-start justify-between gap-4 mb-2">
+                        <h3 className="text-lg font-semibold text-foreground line-clamp-2">
+                          {post.title}
+                        </h3>
+                        
+                        {post.kinopoisk_rating && (
+                          <div className="flex items-center gap-1 shrink-0 px-2 py-1 bg-primary/20 rounded-md">
+                            <Icon name="Star" size={16} className="text-primary fill-primary" />
+                            <span className="font-bold text-primary">{post.kinopoisk_rating}</span>
+                          </div>
+                        )}
+                      </div>
+
+                      {post.description && (
+                        <p className="text-sm text-muted-foreground mb-3 line-clamp-2">
+                          {post.description}
+                        </p>
+                      )}
+                      
+                      <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground mb-3">
+                        <Badge variant="secondary" className="bg-muted text-foreground">
+                          {post.category}
+                        </Badge>
+                        
+                        {post.genre && (
+                          <span className="flex items-center gap-1">
+                            <Icon name="Film" size={14} />
+                            {post.genre}
+                          </span>
+                        )}
+                        
+                        {post.director && (
+                          <span className="flex items-center gap-1">
+                            <Icon name="User" size={14} />
+                            {post.director}
+                          </span>
+                        )}
+                        
+                        {post.release_year && (
+                          <span className="flex items-center gap-1">
+                            <Icon name="Calendar" size={14} />
+                            {post.release_year}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-4 text-sm">
+                        <span className="flex items-center gap-1 text-muted-foreground">
+                          <Icon name="HardDrive" size={14} />
+                          {post.size}
+                        </span>
+                        
+                        <div className="flex items-center gap-1 text-green-400">
+                          <Icon name="ArrowUp" size={16} />
+                          <span className="font-medium">{post.seeds}</span>
+                        </div>
+                        
+                        <div className="flex items-center gap-1 text-red-400">
+                          <Icon name="ArrowDown" size={16} />
+                          <span className="font-medium">{post.peers}</span>
+                        </div>
+                        
+                        <span className="flex items-center gap-1 text-muted-foreground ml-auto">
+                          <Icon name="Clock" size={14} />
+                          {formatDate(post.published_at)}
+                        </span>
+                      </div>
                     </div>
                   </div>
-                  
-                  <div className="flex items-center gap-4 text-sm shrink-0">
-                    <div className="flex items-center gap-1 text-green-400">
-                      <Icon name="ArrowUp" size={16} />
-                      <span className="font-medium">{post.seeds}</span>
-                    </div>
-                    <div className="flex items-center gap-1 text-red-400">
-                      <Icon name="ArrowDown" size={16} />
-                      <span className="font-medium">{post.peers}</span>
-                    </div>
-                    <Icon name="ExternalLink" size={18} className="text-primary" />
-                  </div>
-                </div>
-              </Card>
-            ))
-          ) : (
-            <div className="text-center py-16">
-              <Icon name="Search" size={48} className="mx-auto text-muted-foreground mb-4" />
-              <p className="text-lg text-muted-foreground">Ничего не найдено</p>
-              <p className="text-sm text-muted-foreground mt-2">Попробуйте изменить запрос</p>
-            </div>
-          )}
-        </div>
+                </Card>
+              ))
+            ) : (
+              <div className="text-center py-16">
+                <Icon name="Search" size={48} className="mx-auto text-muted-foreground mb-4" />
+                <p className="text-lg text-muted-foreground">Ничего не найдено</p>
+                <p className="text-sm text-muted-foreground mt-2">
+                  {posts.length === 0 ? 'Нажмите "Обновить базу" для загрузки постов' : 'Попробуйте изменить запрос'}
+                </p>
+              </div>
+            )}
+          </div>
+        )}
 
         {filteredPosts.length > 0 && (
           <div className="mt-8 text-center text-sm text-muted-foreground">
-            Найдено постов: {filteredPosts.length}
+            Найдено постов: {filteredPosts.length} из {posts.length}
           </div>
         )}
       </div>
